@@ -16,6 +16,14 @@ impl EventQueueHeader {
         self.tail = 0;
         self.capacity = capacity;
     }
+
+    pub fn validate(&self, buf_len: usize) -> Result<(), ProgramError> {
+        let capacity = usize::try_from(self.capacity).map_err(|_| ProgramError::InvalidAccountData)?;
+        if capacity == 0 || capacity > buf_len / Event::serialized_size()? {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        Ok(())
+    }
 }
 
 /// Writes an event into the queue at the current tail position.
@@ -24,10 +32,12 @@ pub fn push_event(
     buf: &mut [u8],
     event: &Event,
 ) -> Result<(), ProgramError> {
-    let idx = header.tail % header.capacity;
-    let offset = (idx as usize) * Event::serialized_size().unwrap_or(64);
+    header.validate(buf.len())?;
+    let slot_size = Event::serialized_size()?;
+    let idx = (header.tail % header.capacity) as usize;
+    let offset = idx * slot_size;
 
-    let mut slice = &mut buf[offset..offset + Event::serialized_size().unwrap_or(64)];
+    let mut slice = &mut buf[offset..offset + slot_size];
     event.serialize(&mut slice)?;
 
     header.tail = header.tail.wrapping_add(1);
@@ -39,10 +49,12 @@ pub fn push_event(
 
 impl Event {
     fn serialized_size() -> Result<usize, ProgramError> {
-        // Rough upper bound used for calculating offsets.
-        let dummy = Event::FundingUpdate {
-            market: solana_program::pubkey::Pubkey::default(),
-            funding_rate_bps: 0,
+        // Trade is the largest event variant and determines the slot size.
+        let dummy = Event::Trade {
+            maker: solana_program::pubkey::Pubkey::default(),
+            taker: solana_program::pubkey::Pubkey::default(),
+            price_lots: 0,
+            base_lots: 0,
         };
         let mut data = Vec::with_capacity(128);
         dummy

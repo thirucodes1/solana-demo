@@ -2,9 +2,10 @@ use borsh::{to_vec, BorshDeserialize};
 use matching_engine::{
     instruction::EngineInstruction,
     matching::match_orders,
-    state::{Order, UserAccount},
+    queue::{push_event, EventQueueHeader},
+    state::{Event, Order, UserAccount},
 };
-use solana_program::pubkey::Pubkey;
+use solana_program::{program_error::ProgramError, pubkey::Pubkey};
 
 #[test]
 fn instruction_roundtrip() {
@@ -29,6 +30,58 @@ fn instruction_roundtrip() {
         }
         _ => panic!("unexpected variant"),
     }
+}
+
+#[test]
+fn event_queue_rejects_invalid_capacity() {
+    let event = Event::Trade {
+        maker: Pubkey::new_unique(),
+        taker: Pubkey::new_unique(),
+        price_lots: 100,
+        base_lots: 1,
+    };
+    let mut data = vec![0; to_vec(&event).unwrap().len()];
+    let mut header = EventQueueHeader::try_from_slice(&[0; 24]).unwrap();
+
+    assert_eq!(
+        push_event(&mut header, &mut data, &event),
+        Err(ProgramError::InvalidAccountData)
+    );
+    assert_eq!(header.tail, 0);
+
+    header.capacity = 2;
+    assert_eq!(
+        push_event(&mut header, &mut data, &event),
+        Err(ProgramError::InvalidAccountData)
+    );
+
+    header.capacity = 1;
+    let short_len = data.len() - 1;
+    assert_eq!(
+        push_event(&mut header, &mut data[..short_len], &event),
+        Err(ProgramError::InvalidAccountData)
+    );
+}
+
+#[test]
+fn event_queue_writes_trade_with_valid_capacity() {
+    let event = Event::Trade {
+        maker: Pubkey::new_unique(),
+        taker: Pubkey::new_unique(),
+        price_lots: 100,
+        base_lots: 1,
+    };
+    let encoded = to_vec(&event).unwrap();
+    let mut data = vec![0; encoded.len()];
+    let mut header = EventQueueHeader {
+        head: 0,
+        tail: 0,
+        capacity: 1,
+    };
+
+    push_event(&mut header, &mut data, &event).unwrap();
+    assert_eq!(data, encoded);
+    assert_eq!(header.tail, 1);
 }
 
 #[test]
