@@ -179,7 +179,10 @@ impl Processor {
         let event_queue_ai = next_account_info(account_info_iter)?;
         let remaining_users: Vec<_> = account_info_iter.cloned().collect();
 
-        if market_ai.owner != program_id || user_ai.owner != program_id {
+        if market_ai.owner != program_id
+            || user_ai.owner != program_id
+            || event_queue_ai.owner != program_id
+        {
             return Err(EngineError::InvalidOwner.into());
         }
 
@@ -192,6 +195,15 @@ impl Processor {
         if !market.is_active {
             return Err(EngineError::MarketInactive.into());
         }
+
+        let mut header = {
+            let buf = event_queue_ai.try_borrow_data()?;
+            let header_bytes = buf.get(..24).ok_or(ProgramError::InvalidAccountData)?;
+            let header = EventQueueHeader::try_from_slice(header_bytes)
+                .map_err(|_| ProgramError::InvalidAccountData)?;
+            header.validate(buf.len() - 24)?;
+            header
+        };
 
         let mut taker = UserAccount::try_from_slice(&user_ai.try_borrow_data()?).map_err(
             |_| {
@@ -229,23 +241,15 @@ impl Processor {
                 .map_err(|_| ProgramError::InvalidAccountData)?;
         }
 
-        let mut header =
-            EventQueueHeader::try_from_slice(&event_queue_ai.try_borrow_data()?[..24])
-                .unwrap_or(EventQueueHeader {
-                    head: 0,
-                    tail: 0,
-                    capacity: 64,
-                });
-
         let mut buf = event_queue_ai.try_borrow_mut_data()?;
-        let (_, data_region) = buf.split_at_mut(24);
+        let (header_bytes, data_region) = buf.split_at_mut(24);
 
         for event in events.iter() {
-            push_event(&mut header, &mut data_region[..], event)?;
+            push_event(&mut header, data_region, event)?;
         }
 
         header
-            .serialize(&mut &mut event_queue_ai.try_borrow_mut_data()?[..24])
+            .serialize(&mut &mut header_bytes[..])
             .map_err(|_| ProgramError::InvalidAccountData)
     }
 
